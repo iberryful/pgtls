@@ -30,8 +30,8 @@ echo "Waiting for PostgreSQL services to be healthy..."
 docker-compose up --wait postgres-plaintext postgres-tls
 
 echo ""
-echo "Starting pgtls proxy services..."
-docker-compose up -d pgtls-to-plaintext pgtls-to-tls
+echo "Starting pgtls proxy service..."
+docker-compose up -d pgtls-to-plaintext
 
 echo ""
 echo "Waiting for proxy services to initialize..."

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use rcgen::{Certificate, CertificateParams, IsCa, KeyPair};
-use rustls::{ClientConfig, ServerConfig};
+use rustls::ClientConfig;
 use rustls_pemfile::{certs, private_key};
 use rustls_pki_types::CertificateDer;
 use std::fs::File;
@@ -9,7 +9,6 @@ use std::net::TcpListener;
 use std::path::Path;
 use tempfile::TempDir;
 use tokio::net::TcpStream;
-use tokio_rustls::TlsAcceptor;
 
 /// Test certificate bundle containing generated cert, key, and CA
 #[derive(Clone)]
@@ -136,42 +135,6 @@ pub fn create_test_client_config(
     Ok(config)
 }
 
-/// Create a TLS server configuration from PEM strings
-pub fn create_test_server_config(
-    cert_pem: &str,
-    key_pem: &str,
-    client_ca_pem: Option<&str>,
-) -> Result<ServerConfig> {
-    let cert_der: Vec<CertificateDer> =
-        certs(&mut BufReader::new(cert_pem.as_bytes())).collect::<Result<Vec<_>, _>>()?;
-
-    let key_der = private_key(&mut BufReader::new(key_pem.as_bytes()))?
-        .ok_or_else(|| anyhow::anyhow!("No private key found"))?;
-
-    let config = if let Some(ca_pem) = client_ca_pem {
-        let ca_cert_der: Vec<CertificateDer> =
-            certs(&mut BufReader::new(ca_pem.as_bytes())).collect::<Result<Vec<_>, _>>()?;
-
-        let mut client_auth_roots = rustls::RootCertStore::empty();
-        for cert in ca_cert_der {
-            client_auth_roots.add(cert)?;
-        }
-
-        let client_cert_verifier =
-            rustls::server::WebPkiClientVerifier::builder(client_auth_roots.into()).build()?;
-
-        ServerConfig::builder()
-            .with_client_cert_verifier(client_cert_verifier)
-            .with_single_cert(cert_der, key_der)?
-    } else {
-        ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(cert_der, key_der)?
-    };
-
-    Ok(config)
-}
-
 /// Mock plaintext backend server that echoes data
 pub async fn run_mock_plaintext_backend(port: u16) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}")).await?;
@@ -200,75 +163,13 @@ pub async fn run_mock_plaintext_backend(port: u16) -> Result<()> {
     }
 }
 
-/// Mock TLS backend server that echoes data
-pub async fn run_mock_tls_backend(port: u16, cert_pem: &str, key_pem: &str) -> Result<()> {
-    let server_config = create_test_server_config(cert_pem, key_pem, None)?;
-    let acceptor = TlsAcceptor::from(std::sync::Arc::new(server_config));
-    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}")).await?;
-
-    loop {
-        let (socket, _) = listener.accept().await?;
-        let acceptor = acceptor.clone();
-
-        tokio::spawn(async move {
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-            // Handle PostgreSQL SSLRequest protocol
-            let mut buffer = [0u8; 8];
-            let mut socket = socket;
-
-            // Read the SSLRequest
-            match socket.read_exact(&mut buffer).await {
-                Ok(_) if buffer == [0, 0, 0, 8, 4, 210, 22, 47] => {
-                    // Respond with 'S' to accept TLS
-                    if socket.write_all(b"S").await.is_ok() {
-                        // Perform TLS handshake
-                        if let Ok(mut tls_stream) = acceptor.accept(socket).await {
-                            echo_tls_data_async(&mut tls_stream).await;
-                        }
-                    }
-                }
-                _ => {
-                    // Not an SSLRequest, try direct TLS handshake
-                    if let Ok(mut tls_stream) = acceptor.accept(socket).await {
-                        echo_tls_data_async(&mut tls_stream).await;
-                    }
-                }
-            }
-        });
-    }
-}
-
-async fn echo_tls_data_async(tls_stream: &mut tokio_rustls::server::TlsStream<TcpStream>) {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    let mut buffer = [0u8; 1024];
-    loop {
-        match tls_stream.read(&mut buffer).await {
-            Ok(0) => break, // Connection closed
-            Ok(n) => {
-                if tls_stream.write_all(&buffer[..n]).await.is_err() {
-                    break;
-                }
-            }
-            Err(_) => break,
-        }
-    }
-
-    // Attempt graceful shutdown
-    let _ = tls_stream.shutdown().await;
-}
-
 /// Create a TOML configuration file for testing
-#[allow(clippy::too_many_arguments)]
 pub fn create_test_config(
     temp_dir: &TempDir,
     proxy_bind_port: u16,
     backend_port: u16,
     server_cert_path: &str,
     server_key_path: &str,
-    backend_tls: bool,
-    backend_root_ca: Option<&str>,
     mtls: bool,
     client_ca_path: Option<&str>,
 ) -> Result<String> {
@@ -285,8 +186,7 @@ mtls = {}
 
 [proxy.backend]
 address = "127.0.0.1:{}"
-tls_enabled = {}
-{}"#,
+"#,
         proxy_bind_port,
         server_cert_path,
         server_key_path,
@@ -297,12 +197,6 @@ tls_enabled = {}
             String::new()
         },
         backend_port,
-        backend_tls,
-        if let Some(ca_path) = backend_root_ca {
-            format!(r#"root_ca = "{ca_path}""#)
-        } else {
-            String::new()
-        }
     );
 
     let config_path = temp_dir.path().join("pgtls.toml");

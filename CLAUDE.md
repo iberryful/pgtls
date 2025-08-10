@@ -4,24 +4,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`pgtls` is a protocol-aware TLS termination proxy for PostgreSQL written in Rust. It solves the problem that standard TLS proxies cannot handle PostgreSQL's `STARTTLS`-like TLS negotiation mechanism. The proxy understands the PostgreSQL wire protocol, handles `SSLRequest` messages correctly, and manages dual TLS sessions (client-facing and backend-facing).
+`pgtls` is a protocol-aware TLS termination proxy for PostgreSQL written in Rust. It solves the problem that standard TLS proxies cannot handle PostgreSQL's `STARTTLS`-like TLS negotiation mechanism. The proxy understands the PostgreSQL wire protocol, handles `SSLRequest` messages correctly, and terminates TLS connections from clients before forwarding them as plaintext to backend servers.
 
 ## Key Architecture Concepts
 
 ### Protocol Handling
 - **SSLRequest Detection**: The proxy identifies 8-byte `SSLRequest` messages (length=8, code=80877103) vs regular `StartupMessage` packets
-- **State Machine**: Each connection follows: `AwaitingInitialBytes` → `SSLRequestDetected` → `RespondedToClient` → `ClientTlsHandshake` → `BackendTlsHandshake` → `Streaming`
-- **Dual TLS Context**: Manages separate TLS sessions - acts as server to clients and as client to backends
+- **State Machine**: Each connection follows: `AwaitingInitialBytes` → `SSLRequestDetected` → `RespondedToClient` → `ClientTlsHandshake` → `PlaintextForwarding`
+- **TLS Termination**: Acts as TLS server to clients and forwards traffic as plaintext to backend servers
 
 ### Configuration Structure
 - Multiple `[[proxy]]` routes in TOML configuration
 - Each route maps one listener to one backend
-- Supports both TLS-to-TLS and TLS-to-plaintext modes
-- mTLS support for both client and backend connections
+- Supports TLS-to-plaintext mode only (simplified architecture)
+- mTLS support for client connections
 
 ### Certificate Management
 - Client-facing: Server certificate/key, optional client CA for mTLS verification
-- Backend-facing: Root CA for server verification, optional client cert/key for backend mTLS
+- Backend connections are plaintext (no certificates needed)
 - Uses `rustls` with `tokio-rustls` integration
 
 ## Development Commands
@@ -114,8 +114,6 @@ log_level = "info"
 
   [proxy.backend]
   address = "db.example.com:5432"
-  tls_enabled = true
-  root_ca = "/path/to/backend-ca.pem"
 ```
 
 ## Testing Strategy
@@ -123,7 +121,7 @@ log_level = "info"
 Follow the TDD approach outlined in the tasks:
 1. Write tests for configuration parsing and validation
 2. Implement and test SSLRequest detection logic
-3. Test connection handling for both TLS-to-plaintext and TLS-to-TLS scenarios
+3. Test TLS-to-plaintext connection handling
 4. End-to-end integration tests with real PostgreSQL connections
 5. Performance and security testing
 

@@ -66,23 +66,6 @@ services:
         condition: service_completed_successfully
     command: ["/app/pgtls", "/app/config.toml"]
 
-  # pgtls proxy for TLS-to-TLS scenario
-  pgtls-to-tls:
-    build: .
-    volumes:
-      - ./docker/pgtls-to-tls.toml:/app/config.toml:ro
-      - ./docker/certs:/app/certs:ro
-    ports:
-      - "6433:6433"
-    networks:
-      - pgtls-net
-    depends_on:
-      postgres-tls:
-        condition: service_healthy
-      cert-generator:
-        condition: service_completed_successfully
-    command: ["/app/pgtls", "/app/config.toml"]
-
   # Test runner service
   e2e-test:
     image: postgres:15-alpine
@@ -93,8 +76,6 @@ services:
       - pgtls-net
     depends_on:
       pgtls-to-plaintext:
-        condition: service_started
-      pgtls-to-tls:
         condition: service_started
     command: sh /e2e-test.sh
     profiles:

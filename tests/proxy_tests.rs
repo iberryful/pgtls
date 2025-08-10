@@ -31,8 +31,6 @@ async fn test_tls_to_plaintext_integration() -> Result<()> {
         backend_port,
         &proxy_cert_path,
         &proxy_key_path,
-        false, // backend_tls = false (plaintext)
-        None,  // no backend root CA
         false, // mtls = false
         None,  // no client CA
     )?;
@@ -104,174 +102,6 @@ async fn test_tls_to_plaintext_integration() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_tls_to_tls_integration() -> Result<()> {
-    // Find free ports
-    let proxy_port = find_free_port()?;
-    let backend_port = find_free_port()?;
-
-    // Generate certificates
-    let proxy_cert = generate_test_certificate("localhost")?;
-    let backend_cert = generate_test_certificate("localhost")?;
-
-    // Create temporary directory
-    let temp_dir = TempDir::new()?;
-    let (proxy_cert_path, proxy_key_path, _proxy_ca_path) =
-        write_cert_bundle(&proxy_cert, temp_dir.path(), "proxy")?;
-    let (_backend_cert_path, _backend_key_path, backend_ca_path) =
-        write_cert_bundle(&backend_cert, temp_dir.path(), "backend")?;
-
-    // Create configuration file
-    let config_path = create_test_config(
-        &temp_dir,
-        proxy_port,
-        backend_port,
-        &proxy_cert_path,
-        &proxy_key_path,
-        true,                   // backend_tls = true
-        Some(&backend_ca_path), // backend root CA - proxy trusts backend cert
-        false,                  // mtls = false
-        None,                   // no client CA
-    )?;
-
-    // Start mock TLS backend
-    let backend_cert_clone = backend_cert.clone();
-    let backend_task = tokio::spawn(async move {
-        run_mock_tls_backend(
-            backend_port,
-            &backend_cert_clone.cert_pem,
-            &backend_cert_clone.key_pem,
-        )
-        .await
-    });
-
-    // Give backend time to start
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // Start pgtls proxy
-    let mut proxy_process = std::process::Command::new("./target/debug/pgtls")
-        .args([&config_path])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-
-    // Wait for proxy to start
-    wait_for_port(proxy_port, 5).await?;
-
-    // Test the proxy
-    let test_result = async {
-        // Give proxy extra time to start
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        // Create TLS client configuration
-        let client_config = create_test_client_config(&proxy_cert.ca_pem, None)?;
-        let connector = TlsConnector::from(std::sync::Arc::new(client_config));
-
-        // Connect to proxy
-        let stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{proxy_port}")).await?;
-
-        // Perform SSLRequest handshake
-        let mut stream = stream;
-        stream.write_all(&[0, 0, 0, 8, 4, 210, 22, 47]).await?; // SSLRequest
-
-        let mut response = [0u8; 1];
-        stream.read_exact(&mut response).await?;
-        assert_eq!(response[0], b'S', "Expected 'S' response to SSLRequest");
-
-        // Perform TLS handshake with proxy
-        let server_name = ServerName::try_from("localhost")?;
-        let mut tls_stream = connector.connect(server_name, stream).await?;
-
-        // Send test data
-        let test_payload = b"integration test tls-to-tls";
-        tls_stream.write_all(test_payload).await?;
-
-        // Read response with timeout - try to read any data first
-        let mut buffer = vec![0u8; test_payload.len()];
-        let read_result = timeout(Duration::from_secs(3), tls_stream.read(&mut buffer)).await;
-
-        match read_result {
-            Ok(Ok(0)) => {
-                return Err(anyhow::anyhow!("Connection closed immediately after write"));
-            }
-            Ok(Ok(n)) => {
-                // We received some data, check if it matches what we sent
-                if n == test_payload.len() && &buffer[..n] == test_payload {
-                    println!("TLS-to-TLS proxy working correctly - received echoed data");
-                } else {
-                    // We got some data but not the full echo - this might be a partial read
-                    println!("Received {} bytes, expected {}", n, test_payload.len());
-                    // Try to read the rest
-                    if n < test_payload.len() {
-                        match timeout(Duration::from_secs(1), tls_stream.read(&mut buffer[n..]))
-                            .await
-                        {
-                            Ok(Ok(additional)) => {
-                                let total = n + additional;
-                                if total == test_payload.len() && &buffer[..total] == test_payload {
-                                    println!(
-                                        "TLS-to-TLS proxy working correctly after additional read"
-                                    );
-                                } else {
-                                    return Err(anyhow::anyhow!(
-                                        "Data mismatch: got {} bytes total",
-                                        total
-                                    ));
-                                }
-                            }
-                            _ => {
-                                // Even partial data indicates the connection is working
-                                println!("Got partial data but connection works");
-                            }
-                        }
-                    }
-                }
-            }
-            Ok(Err(e)) => {
-                // Check if it's a TLS close_notify issue after we got the data
-                let error_msg = e.to_string();
-                if error_msg.contains("close_notify") || error_msg.contains("unexpected eof") {
-                    println!("TLS close_notify issue (common in tests): {error_msg}");
-                    // The proxy is likely working, just the test connection cleanup is messy
-                } else {
-                    return Err(e.into());
-                }
-            }
-            Err(_) => {
-                return Err(anyhow::anyhow!("Timeout reading response from TLS backend"));
-            }
-        }
-
-        // Gracefully close the TLS stream
-        tls_stream.shutdown().await.ok();
-
-        Ok::<_, anyhow::Error>(())
-    }
-    .await;
-
-    // Clean up
-    proxy_process.kill().ok();
-    backend_task.abort();
-
-    // Handle the result with better error messages for test_tls_to_tls_integration
-    match test_result {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            let error_msg = e.to_string();
-            if error_msg.contains("Connection reset by peer") || error_msg.contains("os error 54") {
-                // This is a common test flake in TLS-to-TLS scenarios
-                println!(
-                    "Warning: Connection reset by peer detected - this is often a test environment issue"
-                );
-                println!("The proxy functionality is likely working but test cleanup is racy");
-                Ok(()) // Treat as success since this is a test environment artifact
-            } else {
-                Err(e)
-            }
-        }
-    }
-}
-
-#[tokio::test]
 async fn test_mtls_integration() -> Result<()> {
     // Find free ports
     let proxy_port = find_free_port()?;
@@ -297,8 +127,6 @@ async fn test_mtls_integration() -> Result<()> {
         backend_port,
         &proxy_cert_path,
         &proxy_key_path,
-        false,             // backend_tls = false (plaintext backend)
-        None,              // no backend root CA
         true,              // mtls = true
         Some(&ca_ca_path), // client CA
     )?;

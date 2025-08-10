@@ -37,10 +37,8 @@ Each `[[proxy]]` table has two sub-tables: `listener` and `backend`.
 #### **3.2.2. `[proxy.backend]` - Backend Server**
 
 - `address`: (Required) The address (hostname or IP) and port of the backend PostgreSQL server. Example: `"127.0.0.1:5432"`.
-- `tls_enabled`: (Optional) A boolean (`true` or `false`) to control whether to use TLS for the connection to the backend server. Defaults to `true`.
-- `root_ca`: (Optional) The file path to the root CA certificate bundle used to verify the backend server's certificate. Required if `tls_enabled` is `true`.
-- `client_cert`: (Optional) The file path to the client certificate that the proxy will present to the backend server for mTLS. Only used if `tls_enabled` is `true`.
-- `client_key`: (Optional) The file path to the private key for the proxy's client certificate. Required if `client_cert` is set. Only used if `tls_enabled` is `true`.
+
+*Note: This proxy only supports plaintext connections to backend PostgreSQL servers. All client connections are TLS-terminated at the proxy and then forwarded as plaintext to the backend.*
 
 ## **4. Example Configuration File**
 
@@ -48,8 +46,7 @@ Each `[[proxy]]` table has two sub-tables: `listener` and `backend`.
 # Global settings
 log_level = "info"
 
-# Proxy route #1: Public-facing listener to a secure, TLS-enabled backend.
-# Requires clients to present a valid certificate (mTLS).
+# Proxy route #1: Public-facing listener with mTLS to plaintext backend
 [[proxy]]
   [proxy.listener]
   bind_address = "0.0.0.0:6432"
@@ -60,11 +57,8 @@ log_level = "info"
 
   [proxy.backend]
   address = "db.example.com:5432"
-  tls_enabled = true
-  root_ca = "/etc/pgtls/certs/backend-ca.pem"
 
 # Proxy route #2: Internal listener that adds TLS to a legacy backend
-# that does not have TLS configured.
 [[proxy]]
   [proxy.listener]
   bind_address = "127.0.0.1:6433"
@@ -74,7 +68,6 @@ log_level = "info"
 
   [proxy.backend]
   address = "10.0.1.50:5432"
-  tls_enabled = false
 ```
 
 ## **5. Configuration Loading and Validation**
@@ -83,7 +76,5 @@ log_level = "info"
 - The implementation must perform validation on each `[[proxy]]` entry:
   - All required fields must be present.
   - All specified file paths must exist and be readable.
-  - If `backend.tls_enabled` is `true`, `backend.root_ca` must be present.
-  - `backend.client_key` must be present if `backend.client_cert` is.
   - `listener.client_ca` must be present if `listener.mtls` is `true`.
 - Clear and actionable error messages should be provided for any configuration errors.

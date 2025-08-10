@@ -30,19 +30,10 @@ pub struct Listener {
 #[derive(Debug, Deserialize, Clone)]
 pub struct Backend {
     pub address: String,
-    #[serde(default = "default_tls_enabled")]
-    pub tls_enabled: bool,
-    pub root_ca: Option<String>,
-    pub client_cert: Option<String>,
-    pub client_key: Option<String>,
 }
 
 fn default_log_level() -> String {
     "info".to_string()
-}
-
-fn default_tls_enabled() -> bool {
-    false
 }
 
 impl Config {
@@ -102,46 +93,8 @@ impl Proxy {
     }
 
     fn validate_backend(&self, index: usize) -> Result<()> {
-        let prefix = format!("proxy[{index}].backend");
-
-        // If TLS is enabled, root_ca must be present and exist
-        if self.backend.tls_enabled {
-            match &self.backend.root_ca {
-                Some(root_ca) => {
-                    self.check_file_exists(root_ca, &format!("{prefix}.root_ca"))?;
-                }
-                None => {
-                    return Err(anyhow!(
-                        "{}.root_ca is required when tls_enabled is true",
-                        prefix
-                    ));
-                }
-            }
-        }
-
-        // If client_cert is provided, client_key must also be provided
-        match (&self.backend.client_cert, &self.backend.client_key) {
-            (Some(client_cert), Some(client_key)) => {
-                self.check_file_exists(client_cert, &format!("{prefix}.client_cert"))?;
-                self.check_file_exists(client_key, &format!("{prefix}.client_key"))?;
-            }
-            (Some(_), None) => {
-                return Err(anyhow!(
-                    "{}.client_key is required when client_cert is provided",
-                    prefix
-                ));
-            }
-            (None, Some(_)) => {
-                return Err(anyhow!(
-                    "{}.client_cert is required when client_key is provided",
-                    prefix
-                ));
-            }
-            (None, None) => {
-                // Both are None, which is valid
-            }
-        }
-
+        let _prefix = format!("proxy[{index}].backend");
+        // No validation needed for plaintext-only backends
         Ok(())
     }
 
@@ -175,7 +128,7 @@ mod tests {
 
     #[test]
     fn test_load_full_config() {
-        let (server_cert, server_key, client_ca, backend_ca) = create_dummy_cert_files();
+        let (server_cert, server_key, client_ca, _backend_ca) = create_dummy_cert_files();
 
         let config_content = format!(
             r#"
@@ -191,8 +144,6 @@ log_level = "debug"
 
   [proxy.backend]
   address = "db.example.com:5432"
-  tls_enabled = true
-  root_ca = "{}"
 
 [[proxy]]
   [proxy.listener]
@@ -203,12 +154,10 @@ log_level = "debug"
 
   [proxy.backend]
   address = "10.0.1.50:5432"
-  tls_enabled = false
 "#,
             server_cert.path().display(),
             server_key.path().display(),
             client_ca.path().display(),
-            backend_ca.path().display(),
             server_cert.path().display(),
             server_key.path().display(),
         );
@@ -225,8 +174,6 @@ log_level = "debug"
         assert!(proxy1.listener.mtls);
         assert!(proxy1.listener.client_ca.is_some());
         assert_eq!(proxy1.backend.address, "db.example.com:5432");
-        assert!(proxy1.backend.tls_enabled);
-        assert!(proxy1.backend.root_ca.is_some());
 
         // Second proxy
         let proxy2 = &config.proxies[1];
@@ -234,13 +181,11 @@ log_level = "debug"
         assert!(!proxy2.listener.mtls);
         assert!(proxy2.listener.client_ca.is_none());
         assert_eq!(proxy2.backend.address, "10.0.1.50:5432");
-        assert!(!proxy2.backend.tls_enabled);
-        assert!(proxy2.backend.root_ca.is_none());
     }
 
     #[test]
     fn test_load_minimal_config() {
-        let (server_cert, server_key, _, backend_ca) = create_dummy_cert_files();
+        let (server_cert, server_key, _, _backend_ca) = create_dummy_cert_files();
 
         let config_content = format!(
             r#"
@@ -252,11 +197,9 @@ log_level = "debug"
 
   [proxy.backend]
   address = "localhost:5432"
-  root_ca = "{}"
 "#,
             server_cert.path().display(),
             server_key.path().display(),
-            backend_ca.path().display(),
         );
 
         let config_file = create_temp_file(&config_content);
@@ -268,7 +211,6 @@ log_level = "debug"
 
         let proxy = &config.proxies[0];
         assert!(!proxy.listener.mtls); // default false
-        assert!(!proxy.backend.tls_enabled); // default false
     }
 
     #[test]
@@ -286,7 +228,6 @@ log_level = "debug"
 
   [proxy.backend]
   address = "localhost:5432"
-  tls_enabled = false
 "#,
             server_cert.path().display(),
             server_key.path().display(),
@@ -301,75 +242,6 @@ log_level = "debug"
                 .unwrap_err()
                 .to_string()
                 .contains("client_ca is required when mtls is true")
-        );
-    }
-
-    #[test]
-    fn test_validation_tls_without_root_ca() {
-        let (server_cert, server_key, _, _) = create_dummy_cert_files();
-
-        let config_content = format!(
-            r#"
-[[proxy]]
-  [proxy.listener]
-  bind_address = "127.0.0.1:6432"
-  server_cert = "{}"
-  server_key = "{}"
-
-  [proxy.backend]
-  address = "localhost:5432"
-  tls_enabled = true
-"#,
-            server_cert.path().display(),
-            server_key.path().display(),
-        );
-
-        let config_file = create_temp_file(&config_content);
-        let result = Config::load(config_file.path().to_str().unwrap());
-
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("root_ca is required when tls_enabled is true")
-        );
-    }
-
-    #[test]
-    fn test_validation_client_cert_without_key() {
-        let (server_cert, server_key, _, backend_ca) = create_dummy_cert_files();
-        let client_cert = create_temp_file("dummy client cert");
-
-        let config_content = format!(
-            r#"
-[[proxy]]
-  [proxy.listener]
-  bind_address = "127.0.0.1:6432"
-  server_cert = "{}"
-  server_key = "{}"
-
-  [proxy.backend]
-  address = "localhost:5432"
-  tls_enabled = true
-  root_ca = "{}"
-  client_cert = "{}"
-"#,
-            server_cert.path().display(),
-            server_key.path().display(),
-            backend_ca.path().display(),
-            client_cert.path().display(),
-        );
-
-        let config_file = create_temp_file(&config_content);
-        let result = Config::load(config_file.path().to_str().unwrap());
-
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("client_key is required when client_cert is provided")
         );
     }
 
@@ -396,7 +268,6 @@ log_level = "debug"
 
   [proxy.backend]
   address = "localhost:5432"
-  tls_enabled = false
 "#;
 
         let config_file = create_temp_file(config_content);
