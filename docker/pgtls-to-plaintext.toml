@@ -1,0 +1,12 @@
+log_level = "debug"
+
+[[proxy]]
+[proxy.listener]
+bind_address = "0.0.0.0:6432"
+server_cert = "/app/certs/proxy.crt"
+server_key = "/app/certs/proxy.key"
+mtls = false
+
+[proxy.backend]
+address = "postgres-plaintext:5432"
+tls_enabled = false

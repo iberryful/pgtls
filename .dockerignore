@@ -1,0 +1,19 @@
+# Ignore development files
+target/
+.git/
+.gitignore
+*.md
+docker-compose.yml
+run-e2e-tests.sh
+docker/
+
+# Ignore test files that aren't needed in container
+tests/
+tasks/
+specs/
+
+# Keep only what's needed for building
+# src/
+# Cargo.toml
+# Cargo.lock
+# fixtures/

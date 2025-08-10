@@ -1,0 +1,105 @@
+services:
+  # PostgreSQL server with plaintext connections only
+  postgres-plaintext:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: testdb
+      POSTGRES_USER: testuser
+      POSTGRES_PASSWORD: testpass
+    ports:
+      - "5433:5432"
+    networks:
+      - pgtls-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U testuser -d testdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL server with TLS enabled
+  postgres-tls:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: testdb
+      POSTGRES_USER: testuser
+      POSTGRES_PASSWORD: testpass
+    ports:
+      - "5434:5432"
+    volumes:
+      - ./docker/certs:/var/lib/postgresql/certs:ro
+      - ./docker/postgres-tls.conf:/etc/postgresql/postgresql.conf:ro
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
+    networks:
+      - pgtls-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U testuser -d testdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      - cert-generator
+
+  # Certificate generation service
+  cert-generator:
+    image: alpine:latest
+    volumes:
+      - ./docker/certs:/certs
+      - ./docker/generate-certs.sh:/generate-certs.sh:ro
+    command: sh /generate-certs.sh
+    networks:
+      - pgtls-net
+
+  # pgtls proxy for TLS-to-plaintext scenario
+  pgtls-to-plaintext:
+    build: .
+    volumes:
+      - ./docker/pgtls-to-plaintext.toml:/app/config.toml:ro
+      - ./docker/certs:/app/certs:ro
+    ports:
+      - "6432:6432"
+    networks:
+      - pgtls-net
+    depends_on:
+      postgres-plaintext:
+        condition: service_healthy
+      cert-generator:
+        condition: service_completed_successfully
+    command: ["/app/pgtls", "/app/config.toml"]
+
+  # pgtls proxy for TLS-to-TLS scenario
+  pgtls-to-tls:
+    build: .
+    volumes:
+      - ./docker/pgtls-to-tls.toml:/app/config.toml:ro
+      - ./docker/certs:/app/certs:ro
+    ports:
+      - "6433:6433"
+    networks:
+      - pgtls-net
+    depends_on:
+      postgres-tls:
+        condition: service_healthy
+      cert-generator:
+        condition: service_completed_successfully
+    command: ["/app/pgtls", "/app/config.toml"]
+
+  # Test runner service
+  e2e-test:
+    image: postgres:15-alpine
+    volumes:
+      - ./docker/e2e-test.sh:/e2e-test.sh:ro
+      - ./docker/certs:/certs:ro
+    networks:
+      - pgtls-net
+    depends_on:
+      pgtls-to-plaintext:
+        condition: service_started
+      pgtls-to-tls:
+        condition: service_started
+    command: sh /e2e-test.sh
+    profiles:
+      - test
+
+networks:
+  pgtls-net:
+    driver: bridge
