@@ -11,13 +11,13 @@ pub struct Config {
     pub proxies: Vec<Proxy>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Proxy {
     pub listener: Listener,
     pub backend: Backend,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Listener {
     pub bind_address: String,
     pub server_cert: String,
@@ -27,7 +27,7 @@ pub struct Listener {
     pub client_ca: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Backend {
     pub address: String,
     #[serde(default = "default_tls_enabled")]
@@ -42,7 +42,7 @@ fn default_log_level() -> String {
 }
 
 fn default_tls_enabled() -> bool {
-    true
+    false
 }
 
 impl Config {
@@ -268,7 +268,7 @@ log_level = "debug"
 
         let proxy = &config.proxies[0];
         assert!(!proxy.listener.mtls); // default false
-        assert!(proxy.backend.tls_enabled); // default true
+        assert!(!proxy.backend.tls_enabled); // default false
     }
 
     #[test]

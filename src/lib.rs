@@ -1,4 +1,6 @@
 pub mod config;
+pub mod protocol;
+pub mod proxy;
 
 #[cfg(test)]
 mod tests {
