@@ -1,12 +1,12 @@
 [package]
 name = "pgtls"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["iberrufyl <iberrufyl@gmail.com>"]
 edition = "2024"
 license = "MIT"
 documentation = "https://docs.rs/"
-repository = "https://github.com/TODO"
-homepage = "https://github.com/TODO"
+repository = "https://github.com/iberryful/pgtls"
+homepage = "https://github.com/iberryful/pgtls"
 description = """
 
 """
