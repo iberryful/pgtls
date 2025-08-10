@@ -3,6 +3,7 @@ use clap::Parser;
 use std::process;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
+mod cert_manager;
 mod config;
 mod protocol;
 mod proxy;

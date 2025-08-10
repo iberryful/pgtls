@@ -26,12 +26,13 @@ futures = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.9"
 anyhow = "1.0"
-tokio = { version = "1.0", features = ["net", "io-util", "macros", "rt", "rt-multi-thread", "signal"] }
+tokio = { version = "1.0", features = ["net", "io-util", "macros", "rt", "rt-multi-thread", "signal", "time", "fs"] }
 tokio-rustls = "0.25"
 rustls = "0.22"
 rustls-pemfile = "2.0"
 rustls-pki-types = "1.0"
 rustls-native-certs = "0.7"
+reqwest = { version = "0.11", default-features = false, features = ["rustls-tls"] }
 
 [dev-dependencies]
 tempfile = "3.0"

@@ -48,10 +48,11 @@ For a detailed architectural overview and protocol specifications, please see th
     [[proxy]]
       [proxy.listener]
       bind_address = "0.0.0.0:6432"
-      server_cert = "/etc/pgtls/certs/proxy-server.pem"
-      server_key = "/etc/pgtls/certs/proxy-server.key"
+      cert_refresh_interval = 24h
+      server_cert = "/etc/pgtls/certs/proxy-server.pem" # or https://xxx.com/cert
+      server_key = "/etc/pgtls/certs/proxy-server.key" # or https://xxx.com/cert
       mtls = true
-      client_ca = "/etc/pgtls/certs/client-ca.pem"
+      client_ca = "/etc/pgtls/certs/client-ca.pem" # or https://xxx.com/cert
 
       [proxy.backend]
       address = "db.example.com:5432"

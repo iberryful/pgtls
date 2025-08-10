@@ -25,11 +25,78 @@ pub struct Listener {
     #[serde(default)]
     pub mtls: bool,
     pub client_ca: Option<String>,
+    #[serde(default = "default_refresh_interval", with = "parse_duration")]
+    pub cert_refresh_interval: std::time::Duration,
+}
+
+fn default_refresh_interval() -> std::time::Duration {
+    std::time::Duration::from_secs(24 * 3600) // 24 hours
+}
+
+mod parse_duration {
+    use serde::{self, Deserialize, Deserializer};
+    use std::time::Duration;
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        parse_duration_string(&s).map_err(serde::de::Error::custom)
+    }
+
+    fn parse_duration_string(s: &str) -> Result<Duration, String> {
+        let s = s.trim();
+
+        if let Some(hours_str) = s.strip_suffix('h') {
+            let hours: u64 = hours_str
+                .parse()
+                .map_err(|_| format!("Invalid hours: {hours_str}"))?;
+            Ok(Duration::from_secs(hours * 3600))
+        } else if let Some(minutes_str) = s.strip_suffix("min") {
+            let minutes: u64 = minutes_str
+                .parse()
+                .map_err(|_| format!("Invalid minutes: {minutes_str}"))?;
+            Ok(Duration::from_secs(minutes * 60))
+        } else if let Some(seconds_str) = s.strip_suffix('s') {
+            let seconds: u64 = seconds_str
+                .parse()
+                .map_err(|_| format!("Invalid seconds: {seconds_str}"))?;
+            Ok(Duration::from_secs(seconds))
+        } else {
+            // Try parsing as raw seconds
+            let seconds: u64 = s
+                .parse()
+                .map_err(|_| format!("Invalid duration format: {s}"))?;
+            Ok(Duration::from_secs(seconds))
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Backend {
     pub address: String,
+}
+
+impl Listener {
+    pub fn is_url(path: &str) -> bool {
+        path.starts_with("http://") || path.starts_with("https://")
+    }
+
+    #[allow(dead_code)]
+    pub fn server_cert_is_url(&self) -> bool {
+        Self::is_url(&self.server_cert)
+    }
+
+    #[allow(dead_code)]
+    pub fn server_key_is_url(&self) -> bool {
+        Self::is_url(&self.server_key)
+    }
+
+    #[allow(dead_code)]
+    pub fn client_ca_is_url(&self) -> bool {
+        self.client_ca.as_ref().is_some_and(|ca| Self::is_url(ca))
+    }
 }
 
 fn default_log_level() -> String {
@@ -70,15 +137,15 @@ impl Proxy {
     fn validate_listener(&self, index: usize) -> Result<()> {
         let prefix = format!("proxy[{index}].listener");
 
-        // Check if server certificate and key files exist
-        self.check_file_exists(&self.listener.server_cert, &format!("{prefix}.server_cert"))?;
-        self.check_file_exists(&self.listener.server_key, &format!("{prefix}.server_key"))?;
+        // Validate server certificate and key sources
+        self.validate_cert_source(&self.listener.server_cert, &format!("{prefix}.server_cert"))?;
+        self.validate_cert_source(&self.listener.server_key, &format!("{prefix}.server_key"))?;
 
-        // If mTLS is enabled, client_ca must be present and exist
+        // If mTLS is enabled, client_ca must be present and valid
         if self.listener.mtls {
             match &self.listener.client_ca {
                 Some(client_ca) => {
-                    self.check_file_exists(client_ca, &format!("{prefix}.client_ca"))?;
+                    self.validate_cert_source(client_ca, &format!("{prefix}.client_ca"))?;
                 }
                 None => {
                     return Err(anyhow!(
@@ -87,6 +154,24 @@ impl Proxy {
                     ));
                 }
             }
+        }
+
+        Ok(())
+    }
+
+    fn validate_cert_source(&self, cert_source: &str, field_name: &str) -> Result<()> {
+        if Listener::is_url(cert_source) {
+            // Validate URL format
+            if !cert_source.starts_with("https://") && !cert_source.starts_with("http://") {
+                return Err(anyhow!(
+                    "Invalid URL format for {}: {}",
+                    field_name,
+                    cert_source
+                ));
+            }
+        } else {
+            // File path - check if file exists
+            self.check_file_exists(cert_source, field_name)?;
         }
 
         Ok(())
@@ -293,5 +378,62 @@ log_level = "info"
                 .to_string()
                 .contains("At least one proxy configuration is required")
         );
+    }
+
+    #[test]
+    fn test_cert_refresh_interval_parsing() {
+        let (server_cert, server_key, _, _) = create_dummy_cert_files();
+
+        let config_content = format!(
+            r#"
+[[proxy]]
+  [proxy.listener]
+  bind_address = "127.0.0.1:6432"
+  cert_refresh_interval = "12h"
+  server_cert = "{}"
+  server_key = "{}"
+
+  [proxy.backend]
+  address = "localhost:5432"
+"#,
+            server_cert.path().display(),
+            server_key.path().display(),
+        );
+
+        let config_file = create_temp_file(&config_content);
+        let config = Config::load(config_file.path().to_str().unwrap()).unwrap();
+
+        let proxy = &config.proxies[0];
+        assert_eq!(proxy.listener.cert_refresh_interval.as_secs(), 12 * 3600);
+    }
+
+    #[test]
+    fn test_url_certificate_with_refresh() {
+        // Test URL configuration format - this will fail validation but should parse
+        let config_content = r#"
+[[proxy]]
+  [proxy.listener]
+  bind_address = "127.0.0.1:6432"
+  cert_refresh_interval = "6h"
+  server_cert = "https://example.com/server.pem"
+  server_key = "https://example.com/server.key"
+
+  [proxy.backend]
+  address = "localhost:5432"
+"#;
+
+        let config_file = create_temp_file(config_content);
+        let result =
+            toml::from_str::<Config>(&std::fs::read_to_string(config_file.path()).unwrap());
+
+        // Should parse successfully (validation will fail since URLs don't exist, but structure is correct)
+        assert!(result.is_ok());
+        let config = result.unwrap();
+
+        let proxy = &config.proxies[0];
+        assert_eq!(proxy.listener.cert_refresh_interval.as_secs(), 6 * 3600);
+        assert!(proxy.listener.server_cert_is_url());
+        assert!(proxy.listener.server_key_is_url());
+        assert!(!proxy.listener.client_ca_is_url());
     }
 }

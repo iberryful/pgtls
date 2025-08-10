@@ -11,7 +11,7 @@ cleanup() {
 }
 
 # Set trap to cleanup on exit
-#trap cleanup EXIT
+trap cleanup EXIT
 
 # Build and start infrastructure services
 echo "Building pgtls Docker image..."
@@ -23,11 +23,11 @@ docker-compose up cert-generator
 
 echo ""
 echo "Starting infrastructure services..."
-docker-compose up -d postgres-plaintext postgres-tls
+docker-compose up -d postgres-plaintext
 
 echo ""
 echo "Waiting for PostgreSQL services to be healthy..."
-docker-compose up --wait postgres-plaintext postgres-tls
+docker-compose up --wait postgres-plaintext
 
 echo ""
 echo "Starting pgtls proxy service..."

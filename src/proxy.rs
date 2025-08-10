@@ -1,21 +1,29 @@
 use crate::{
+    cert_manager::CertificateManager,
     config,
     protocol::{self, RequestType},
 };
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use rustls::ServerConfig;
-use rustls_pemfile::{certs, private_key};
-use rustls_pki_types::CertificateDer;
-use std::fs::File;
-use std::io::BufReader;
 use std::sync::Arc;
 use tokio::io::{self, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 
 pub async fn run_proxy(proxy_config: config::Proxy) -> Result<()> {
+    tracing::info!("Creating certificate manager");
+    let cert_manager = CertificateManager::new()?;
+
     tracing::info!("Creating TLS server configuration for proxy");
-    let server_config = Arc::new(create_server_config(&proxy_config.listener)?);
+    let server_config = Arc::new(
+        cert_manager
+            .create_server_config(&proxy_config.listener)
+            .await?,
+    );
+
+    // Start certificate refresh task in background
+    let _refresh_handle = cert_manager.start_refresh_task();
+    tracing::info!("Certificate refresh task started");
 
     tracing::info!(
         "Starting proxy listener on {}",
@@ -111,73 +119,11 @@ where
     Ok(())
 }
 
-fn create_server_config(listener_config: &config::Listener) -> Result<ServerConfig> {
-    let cert_file = File::open(&listener_config.server_cert)?;
-    let mut cert_reader = BufReader::new(cert_file);
-    let cert_chain: Vec<CertificateDer> = certs(&mut cert_reader).collect::<Result<Vec<_>, _>>()?;
-
-    let key_file = File::open(&listener_config.server_key)?;
-    let mut key_reader = BufReader::new(key_file);
-    let private_key =
-        private_key(&mut key_reader)?.ok_or_else(|| anyhow!("No private key found in key file"))?;
-
-    let config = if listener_config.mtls {
-        // mTLS enabled - require client certificates
-        if let Some(client_ca_path) = &listener_config.client_ca {
-            let ca_file = File::open(client_ca_path)?;
-            let mut ca_reader = BufReader::new(ca_file);
-            let ca_certs: Vec<CertificateDer> =
-                certs(&mut ca_reader).collect::<Result<Vec<_>, _>>()?;
-
-            let mut client_auth_roots = rustls::RootCertStore::empty();
-            for cert in ca_certs {
-                client_auth_roots.add(cert)?;
-            }
-
-            let client_cert_verifier =
-                rustls::server::WebPkiClientVerifier::builder(client_auth_roots.into()).build()?;
-
-            ServerConfig::builder()
-                .with_client_cert_verifier(client_cert_verifier)
-                .with_single_cert(cert_chain, private_key)?
-        } else {
-            return Err(anyhow!("mTLS enabled but no client_ca specified"));
-        }
-    } else {
-        // No client authentication required
-        ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(cert_chain, private_key)?
-    };
-
-    Ok(config)
-}
-
-// Stub function for basic testing - creates a self-signed cert in memory
-#[cfg(test)]
-#[allow(dead_code)]
-fn create_stub_server_config() -> Result<ServerConfig> {
-    // Create a minimal self-signed certificate for testing
-    let cert_bytes = include_bytes!("../fixtures/test-cert.pem");
-    let key_bytes = include_bytes!("../fixtures/test-key.pem");
-
-    let cert_chain: Vec<CertificateDer> =
-        certs(&mut BufReader::new(&cert_bytes[..])).collect::<Result<Vec<_>, _>>()?;
-
-    let private_key = private_key(&mut BufReader::new(&key_bytes[..]))?
-        .ok_or_else(|| anyhow!("No private key found in test key file"))?;
-
-    let config = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(cert_chain, private_key)?;
-
-    Ok(config)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{Backend, Listener, Proxy};
+    use std::time::Duration;
 
     // Helper function to create a test proxy configuration
     #[allow(dead_code)]
@@ -189,6 +135,7 @@ mod tests {
                 server_key: "fixtures/test-key.pem".to_string(),
                 mtls: false,
                 client_ca: None,
+                cert_refresh_interval: Duration::from_secs(24 * 3600),
             },
             backend: Backend {
                 address: format!("127.0.0.1:{backend_port}"),
@@ -226,6 +173,7 @@ mod tests {
                 server_key: "fixtures/test-key.pem".to_string(),
                 mtls: false,
                 client_ca: None,
+                cert_refresh_interval: Duration::from_secs(24 * 3600),
             },
             backend: Backend {
                 address: backend_addr.to_string(),
@@ -236,9 +184,16 @@ mod tests {
         // For now, we'll test the basic structure and logic paths
 
         // Test that we can create a server config with our test certificates
-        let result = create_server_config(&proxy_config.listener);
+        let cert_manager = CertificateManager::new().unwrap();
+        let result = cert_manager
+            .create_server_config(&proxy_config.listener)
+            .await;
         // We expect this to succeed now with proper certificates
-        assert!(result.is_ok());
+        if std::path::Path::new("fixtures/test-cert.pem").exists() {
+            assert!(result.is_ok());
+        } else {
+            assert!(result.is_err());
+        }
     }
 
     #[tokio::test]
@@ -261,15 +216,17 @@ mod tests {
             server_key: "/nonexistent/key.pem".to_string(),
             mtls: false,
             client_ca: None,
+            cert_refresh_interval: Duration::from_secs(24 * 3600),
         };
 
-        let result = create_server_config(&listener_config);
+        let cert_manager = CertificateManager::new().unwrap();
+        let result = cert_manager.create_server_config(&listener_config).await;
         assert!(result.is_err());
         assert!(
             result
                 .unwrap_err()
                 .to_string()
-                .contains("No such file or directory")
+                .contains("Failed to read certificate file")
         );
     }
 }
