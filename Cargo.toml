@@ -19,10 +19,14 @@ name = "pgtls"
 path = "src/main.rs"
 
 [dependencies]
+clap = { version = "4.0", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+futures = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.9"
 anyhow = "1.0"
-tokio = { version = "1.0", features = ["net", "io-util", "macros", "rt", "rt-multi-thread"] }
+tokio = { version = "1.0", features = ["net", "io-util", "macros", "rt", "rt-multi-thread", "signal"] }
 tokio-rustls = "0.25"
 rustls = "0.22"
 rustls-pemfile = "2.0"

@@ -1,41 +1,88 @@
 use anyhow::Result;
-use pgtls::config::Config;
-use std::env;
+use clap::Parser;
 use std::process;
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
+
+mod config;
+mod protocol;
+mod proxy;
+
+use config::Config;
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Path to the configuration file
+    config: String,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args: Vec<String> = env::args().collect();
+    let args = Args::parse();
+    let config = Config::load(&args.config)?;
 
-    if args.len() != 2 {
-        eprintln!("Usage: {} <config-file>", args[0]);
-        process::exit(1);
-    }
+    // Setup logging
+    let filter = EnvFilter::try_new(&config.log_level).unwrap_or_else(|_| EnvFilter::new("info"));
 
-    let config_path = &args[1];
-    let config = Config::load(config_path)?;
+    tracing_subscriber::registry()
+        .with(fmt::layer().json()) // Use JSON formatting
+        .with(filter)
+        .init();
 
     if config.proxies.is_empty() {
-        eprintln!("No proxy configurations found in {config_path}");
+        tracing::error!("No proxy configurations found in {}", args.config);
         process::exit(1);
     }
 
-    // Run all proxies concurrently
+    tracing::info!(
+        "Starting pgtls proxy with {} route(s)",
+        config.proxies.len()
+    );
+
+    // Start all proxy tasks
     let mut tasks = Vec::new();
 
     for proxy_config in config.proxies {
-        let task = tokio::spawn(async move {
-            if let Err(e) = pgtls::proxy::run_proxy(proxy_config).await {
-                eprintln!("Proxy error: {e}");
-            }
-        });
+        tracing::info!(
+            "Starting proxy for listener: {}",
+            proxy_config.listener.bind_address
+        );
+        let task = tokio::spawn(proxy::run_proxy(proxy_config));
         tasks.push(task);
     }
 
-    // Wait for all proxy tasks to complete
-    for task in tasks {
-        task.await?;
+    // Wait for shutdown signal
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Received Ctrl+C, shutting down.");
+        }
+        // On Unix, we can also listen for SIGTERM
+        result = async {
+            #[cfg(unix)]
+            {
+                let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+                sigterm.recv().await;
+                tracing::info!("Received SIGTERM, shutting down.");
+                Ok::<(), std::io::Error>(())
+            }
+            #[cfg(not(unix))]
+            {
+                futures::future::pending::<Result<(), std::io::Error>>().await
+            }
+        } => {
+            if let Err(e) = result {
+                tracing::error!("Error setting up signal handler: {}", e);
+            }
+        }
+        // If any proxy task completes (likely due to error), shut down
+        result = futures::future::select_all(tasks.iter_mut()) => {
+            match result.0 {
+                Ok(_) => tracing::info!("Proxy task completed, shutting down."),
+                Err(e) => tracing::error!("Proxy task failed: {}, shutting down.", e),
+            }
+        }
     }
 
+    tracing::info!("Shutdown complete.");
     Ok(())
 }

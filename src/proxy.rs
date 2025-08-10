@@ -14,12 +14,21 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 
 pub async fn run_proxy(proxy_config: config::Proxy) -> Result<()> {
+    tracing::info!("Creating TLS configurations for proxy");
     let server_config = Arc::new(create_server_config(&proxy_config.listener)?);
     let client_config = Arc::new(create_client_config(&proxy_config.backend)?);
+
+    tracing::info!(
+        "Starting proxy listener on {}",
+        proxy_config.listener.bind_address
+    );
     let listener = TcpListener::bind(&proxy_config.listener.bind_address).await?;
 
+    tracing::info!("Proxy ready to accept connections");
     loop {
-        let (client_socket, _) = listener.accept().await?;
+        let (client_socket, client_addr) = listener.accept().await?;
+        tracing::debug!("Accepted connection from {}", client_addr);
+
         let proxy_config = proxy_config.clone();
         let server_config = server_config.clone();
         let client_config = client_config.clone();
@@ -28,7 +37,9 @@ pub async fn run_proxy(proxy_config: config::Proxy) -> Result<()> {
             if let Err(e) =
                 handle_connection(client_socket, proxy_config, server_config, client_config).await
             {
-                eprintln!("Error handling connection: {e}");
+                tracing::error!("Error handling connection from {}: {}", client_addr, e);
+            } else {
+                tracing::debug!("Connection from {} completed successfully", client_addr);
             }
         });
     }
