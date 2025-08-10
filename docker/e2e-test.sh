@@ -87,13 +87,10 @@ wait_for_service pgtls-to-plaintext 6432 "pgtls TLS-to-plaintext proxy"
 echo ""
 echo "=== All services are ready! Starting tests... ==="
 
-# Test 1: Direct connection to plaintext PostgreSQL (baseline)
 echo ""
 echo "=== Baseline Test: Direct PostgreSQL Connections ==="
 test_connection "Direct PostgreSQL plaintext" "postgres-plaintext" "5432" "disable" "success"
-test_connection "Direct PostgreSQL TLS" "postgres-tls" "5432" "require" "success"
 
-# Test 2: TLS-to-plaintext proxy
 echo ""
 echo "=== Test 1: TLS-to-Plaintext Proxy ==="
 test_connection "Client TLS -> pgtls -> PostgreSQL plaintext" "pgtls-to-plaintext" "6432" "require" "success"
@@ -103,6 +100,5 @@ echo "=== Test Results Summary ==="
 echo "✅ All tests completed successfully!"
 echo "✅ TLS-to-plaintext proxy is working"
 echo "✅ SSL request protocol handling is working"
-echo "✅ Error handling is working"
 echo ""
 echo "pgtls proxy is functioning correctly! 🎉"

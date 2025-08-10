@@ -22,7 +22,7 @@ pub async fn run_proxy(proxy_config: config::Proxy) -> Result<()> {
     );
 
     // Start certificate refresh task in background
-    let _refresh_handle = cert_manager.start_refresh_task();
+    let _refresh_handle = cert_manager.start_refresh_task(&proxy_config.listener);
     tracing::info!("Certificate refresh task started");
 
     tracing::info!(

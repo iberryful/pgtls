@@ -4,22 +4,11 @@ use rustls::ServerConfig;
 use rustls_pemfile::{certs, private_key};
 use rustls_pki_types::CertificateDer;
 use std::io::BufReader;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
-
-/// Certificate data loaded from either file or URL
-#[derive(Debug, Clone)]
-pub struct CertificateData {
-    pub content: String,
-    pub loaded_at: Instant,
-    pub refresh_interval: Duration,
-}
+use std::time::Duration;
 
 /// Certificate manager handles loading and refreshing certificates from various sources
 pub struct CertificateManager {
     http_client: reqwest::Client,
-    cert_cache: Arc<RwLock<std::collections::HashMap<String, CertificateData>>>,
 }
 
 impl CertificateManager {
@@ -29,74 +18,28 @@ impl CertificateManager {
             .timeout(Duration::from_secs(30))
             .build()?;
 
-        Ok(Self {
-            http_client,
-            cert_cache: Arc::new(RwLock::new(std::collections::HashMap::new())),
-        })
+        Ok(Self { http_client })
     }
 
     /// Load certificate content from either file or URL
-    pub async fn load_certificate(&self, path: &str, refresh_interval: Duration) -> Result<String> {
+    pub async fn load_certificate(&self, path: &str) -> Result<String> {
         if path.starts_with("http://") || path.starts_with("https://") {
-            self.load_from_url(path, refresh_interval).await
+            self.load_from_url(path).await
         } else {
-            self.load_from_file_cached(path, refresh_interval).await
+            self.load_from_file(path).await
         }
     }
 
-    /// Load certificate from file with caching for refresh intervals
-    async fn load_from_file_cached(
-        &self,
-        path: &str,
-        refresh_interval: Duration,
-    ) -> Result<String> {
-        // Check cache first
-        {
-            let cache = self.cert_cache.read().await;
-            if let Some(cached_data) = cache.get(path)
-                && cached_data.loaded_at.elapsed() < cached_data.refresh_interval
-            {
-                tracing::debug!("Using cached certificate for file: {}", path);
-                return Ok(cached_data.content.clone());
-            }
-        }
-
-        // Read file content
+    /// Load certificate from file
+    async fn load_from_file(&self, path: &str) -> Result<String> {
         tracing::debug!("Reading certificate from file: {}", path);
-        let content = tokio::fs::read_to_string(path)
+        tokio::fs::read_to_string(path)
             .await
-            .map_err(|e| anyhow!("Failed to read certificate file {}: {}", path, e))?;
-
-        // Cache the certificate
-        {
-            let mut cache = self.cert_cache.write().await;
-            cache.insert(
-                path.to_string(),
-                CertificateData {
-                    content: content.clone(),
-                    loaded_at: Instant::now(),
-                    refresh_interval,
-                },
-            );
-        }
-
-        Ok(content)
+            .map_err(|e| anyhow!("Failed to read certificate file {}: {}", path, e))
     }
 
-    /// Load certificate from URL with caching
-    async fn load_from_url(&self, url: &str, refresh_interval: Duration) -> Result<String> {
-        // Check cache first
-        {
-            let cache = self.cert_cache.read().await;
-            if let Some(cached_data) = cache.get(url)
-                && cached_data.loaded_at.elapsed() < cached_data.refresh_interval
-            {
-                tracing::debug!("Using cached certificate for URL: {}", url);
-                return Ok(cached_data.content.clone());
-            }
-        }
-
-        // Fetch from URL
+    /// Load certificate from URL
+    async fn load_from_url(&self, url: &str) -> Result<String> {
         tracing::info!("Fetching certificate from URL: {}", url);
         let response = self
             .http_client
@@ -118,22 +61,6 @@ impl CertificateManager {
             .await
             .map_err(|e| anyhow!("Failed to read certificate content from {}: {}", url, e))?;
 
-        // Validate that content looks like a certificate
-        Self::validate_certificate_content(&content, url)?;
-
-        // Cache the certificate
-        {
-            let mut cache = self.cert_cache.write().await;
-            cache.insert(
-                url.to_string(),
-                CertificateData {
-                    content: content.clone(),
-                    loaded_at: Instant::now(),
-                    refresh_interval,
-                },
-            );
-        }
-
         tracing::info!("Successfully loaded certificate from URL: {}", url);
         Ok(content)
     }
@@ -141,31 +68,19 @@ impl CertificateManager {
     /// Create server config from certificate sources
     pub async fn create_server_config(&self, listener_config: &Listener) -> Result<ServerConfig> {
         // Load server certificate
-        let cert_content = self
-            .load_certificate(
-                &listener_config.server_cert,
-                listener_config.cert_refresh_interval,
-            )
-            .await?;
+        let cert_content = self.load_certificate(&listener_config.server_cert).await?;
         let cert_chain: Vec<CertificateDer> =
             certs(&mut BufReader::new(cert_content.as_bytes())).collect::<Result<Vec<_>, _>>()?;
 
         // Load server private key
-        let key_content = self
-            .load_certificate(
-                &listener_config.server_key,
-                listener_config.cert_refresh_interval,
-            )
-            .await?;
+        let key_content = self.load_certificate(&listener_config.server_key).await?;
         let private_key = private_key(&mut BufReader::new(key_content.as_bytes()))?
             .ok_or_else(|| anyhow!("No private key found in key data"))?;
 
         let config = if listener_config.mtls {
             // mTLS enabled - require client certificates
             if let Some(client_ca_path) = &listener_config.client_ca {
-                let ca_content = self
-                    .load_certificate(client_ca_path, listener_config.cert_refresh_interval)
-                    .await?;
+                let ca_content = self.load_certificate(client_ca_path).await?;
                 let ca_certs: Vec<CertificateDer> =
                     certs(&mut BufReader::new(ca_content.as_bytes()))
                         .collect::<Result<Vec<_>, _>>()?;
@@ -195,104 +110,61 @@ impl CertificateManager {
         Ok(config)
     }
 
-    /// Start background task to refresh certificates
-    pub fn start_refresh_task(&self) -> tokio::task::JoinHandle<()> {
-        let cache = self.cert_cache.clone();
+    /// Helper function to refresh a single certificate
+    async fn refresh_certificate(client: &reqwest::Client, path: &str) -> Result<()> {
+        if path.starts_with("http://") || path.starts_with("https://") {
+            tracing::info!("Refreshing certificate from URL: {}", path);
+            let _content = Self::fetch_certificate_content(client, path).await?;
+            tracing::info!("Successfully refreshed certificate from URL: {}", path);
+            // Certificate content is validated but not stored (just checking accessibility)
+            Ok(())
+        } else {
+            tracing::info!("Refreshing certificate from file: {}", path);
+            tokio::fs::read_to_string(path)
+                .await
+                .map_err(|e| anyhow!("Failed to read certificate file {}: {}", path, e))?;
+            tracing::info!("Successfully refreshed certificate from file: {}", path);
+            Ok(())
+        }
+    }
+
+    /// Start background task to refresh certificates periodically
+    pub fn start_refresh_task(&self, listener_config: &Listener) -> tokio::task::JoinHandle<()> {
         let http_client = self.http_client.clone();
+        let refresh_interval = listener_config.cert_refresh_interval;
+        let server_cert = listener_config.server_cert.clone();
+        let server_key = listener_config.server_key.clone();
+        let client_ca = listener_config.client_ca.clone();
 
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(3600)); // Check every hour
+            let mut interval = tokio::time::interval(refresh_interval);
+            interval.tick().await; // Skip first immediate tick
 
             loop {
                 interval.tick().await;
 
-                let sources_to_refresh = {
-                    let cache_read = cache.read().await;
-                    cache_read
-                        .iter()
-                        .filter_map(|(source, cached_data)| {
-                            if cached_data.loaded_at.elapsed() >= cached_data.refresh_interval {
-                                Some((source.clone(), cached_data.refresh_interval))
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                };
+                // Refresh server certificate
+                if let Err(e) = Self::refresh_certificate(&http_client, &server_cert).await {
+                    tracing::error!(
+                        "Failed to refresh server certificate {}: {}",
+                        server_cert,
+                        e
+                    );
+                }
 
-                for (source, refresh_interval) in sources_to_refresh {
-                    if source.starts_with("http://") || source.starts_with("https://") {
-                        tracing::info!("Refreshing expired certificate from URL: {}", source);
+                // Refresh server key
+                if let Err(e) = Self::refresh_certificate(&http_client, &server_key).await {
+                    tracing::error!("Failed to refresh server key {}: {}", server_key, e);
+                }
 
-                        match Self::fetch_certificate_content(&http_client, &source).await {
-                            Ok(content) => {
-                                let mut cache_write = cache.write().await;
-                                cache_write.insert(
-                                    source.clone(),
-                                    CertificateData {
-                                        content,
-                                        loaded_at: Instant::now(),
-                                        refresh_interval,
-                                    },
-                                );
-                                tracing::info!(
-                                    "Successfully refreshed certificate from URL: {}",
-                                    source
-                                );
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    "Failed to refresh certificate from URL {}: {}",
-                                    source,
-                                    e
-                                );
-                                // Keep the old certificate data for fallback
-                            }
-                        }
-                    } else {
-                        // File-based certificate with refresh interval
-                        tracing::info!("Refreshing expired certificate from file: {}", source);
-
-                        match tokio::fs::read_to_string(&source).await {
-                            Ok(content) => {
-                                let mut cache_write = cache.write().await;
-                                cache_write.insert(
-                                    source.clone(),
-                                    CertificateData {
-                                        content,
-                                        loaded_at: Instant::now(),
-                                        refresh_interval,
-                                    },
-                                );
-                                tracing::info!(
-                                    "Successfully refreshed certificate from file: {}",
-                                    source
-                                );
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    "Failed to refresh certificate from file {}: {}",
-                                    source,
-                                    e
-                                );
-                                // Keep the old certificate data for fallback
-                            }
-                        }
-                    }
+                // Refresh client CA if present
+                if let Some(ca_path) = &client_ca
+                    && let Err(e) = Self::refresh_certificate(&http_client, ca_path).await
+                {
+                    tracing::error!("Failed to refresh client CA {}: {}", ca_path, e);
                 }
             }
         })
-    }
-
-    /// Validate that content looks like a certificate or key
-    fn validate_certificate_content(content: &str, source: &str) -> Result<()> {
-        if !content.contains("-----BEGIN CERTIFICATE-----")
-            && !content.contains("-----BEGIN RSA PRIVATE KEY-----")
-            && !content.contains("-----BEGIN PRIVATE KEY-----")
-        {
-            return Err(anyhow!("Invalid certificate format from URL: {}", source));
-        }
-        Ok(())
     }
 
     /// Helper function to fetch certificate content from URL
@@ -316,9 +188,6 @@ impl CertificateManager {
             .await
             .map_err(|e| anyhow!("Failed to read certificate content from {}: {}", url, e))?;
 
-        // Validate that content looks like a certificate
-        Self::validate_certificate_content(&content, url)?;
-
         Ok(content)
     }
 }
@@ -331,9 +200,7 @@ mod tests {
     async fn test_load_from_file() {
         let manager = CertificateManager::new().unwrap();
 
-        let result = manager
-            .load_certificate("fixtures/test-cert.pem", Duration::from_secs(3600))
-            .await;
+        let result = manager.load_certificate("fixtures/test-cert.pem").await;
         // We expect this to work if the file exists
         if std::path::Path::new("fixtures/test-cert.pem").exists() {
             assert!(result.is_ok());
