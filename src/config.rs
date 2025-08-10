@@ -82,21 +82,6 @@ impl Listener {
     pub fn is_url(path: &str) -> bool {
         path.starts_with("http://") || path.starts_with("https://")
     }
-
-    #[allow(dead_code)]
-    pub fn server_cert_is_url(&self) -> bool {
-        Self::is_url(&self.server_cert)
-    }
-
-    #[allow(dead_code)]
-    pub fn server_key_is_url(&self) -> bool {
-        Self::is_url(&self.server_key)
-    }
-
-    #[allow(dead_code)]
-    pub fn client_ca_is_url(&self) -> bool {
-        self.client_ca.as_ref().is_some_and(|ca| Self::is_url(ca))
-    }
 }
 
 fn default_log_level() -> String {
@@ -143,17 +128,12 @@ impl Proxy {
 
         // If mTLS is enabled, client_ca must be present and valid
         if self.listener.mtls {
-            match &self.listener.client_ca {
-                Some(client_ca) => {
-                    self.validate_cert_source(client_ca, &format!("{prefix}.client_ca"))?;
-                }
-                None => {
-                    return Err(anyhow!(
-                        "{}.client_ca is required when mtls is true",
-                        prefix
-                    ));
-                }
-            }
+            let client_ca = self
+                .listener
+                .client_ca
+                .as_ref()
+                .ok_or_else(|| anyhow!("{}.client_ca is required when mtls is true", prefix))?;
+            self.validate_cert_source(client_ca, &format!("{}.client_ca", prefix))?;
         }
 
         Ok(())
@@ -173,7 +153,6 @@ impl Proxy {
             // File path - check if file exists
             self.check_file_exists(cert_source, field_name)?;
         }
-
         Ok(())
     }
 
@@ -432,8 +411,14 @@ log_level = "info"
 
         let proxy = &config.proxies[0];
         assert_eq!(proxy.listener.cert_refresh_interval.as_secs(), 6 * 3600);
-        assert!(proxy.listener.server_cert_is_url());
-        assert!(proxy.listener.server_key_is_url());
-        assert!(!proxy.listener.client_ca_is_url());
+        assert!(Listener::is_url(&proxy.listener.server_cert));
+        assert!(Listener::is_url(&proxy.listener.server_key));
+        assert!(
+            !proxy
+                .listener
+                .client_ca
+                .as_ref()
+                .is_some_and(|ca| Listener::is_url(ca))
+        );
     }
 }

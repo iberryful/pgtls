@@ -53,11 +53,11 @@ impl CertificateManager {
         // Check cache first
         {
             let cache = self.cert_cache.read().await;
-            if let Some(cached_data) = cache.get(path) {
-                if cached_data.loaded_at.elapsed() < cached_data.refresh_interval {
-                    tracing::debug!("Using cached certificate for file: {}", path);
-                    return Ok(cached_data.content.clone());
-                }
+            if let Some(cached_data) = cache.get(path)
+                && cached_data.loaded_at.elapsed() < cached_data.refresh_interval
+            {
+                tracing::debug!("Using cached certificate for file: {}", path);
+                return Ok(cached_data.content.clone());
             }
         }
 
@@ -88,11 +88,11 @@ impl CertificateManager {
         // Check cache first
         {
             let cache = self.cert_cache.read().await;
-            if let Some(cached_data) = cache.get(url) {
-                if cached_data.loaded_at.elapsed() < cached_data.refresh_interval {
-                    tracing::debug!("Using cached certificate for URL: {}", url);
-                    return Ok(cached_data.content.clone());
-                }
+            if let Some(cached_data) = cache.get(url)
+                && cached_data.loaded_at.elapsed() < cached_data.refresh_interval
+            {
+                tracing::debug!("Using cached certificate for URL: {}", url);
+                return Ok(cached_data.content.clone());
             }
         }
 
@@ -119,12 +119,7 @@ impl CertificateManager {
             .map_err(|e| anyhow!("Failed to read certificate content from {}: {}", url, e))?;
 
         // Validate that content looks like a certificate
-        if !content.contains("-----BEGIN CERTIFICATE-----")
-            && !content.contains("-----BEGIN RSA PRIVATE KEY-----")
-            && !content.contains("-----BEGIN PRIVATE KEY-----")
-        {
-            return Err(anyhow!("Invalid certificate format from URL: {}", url));
-        }
+        Self::validate_certificate_content(&content, url)?;
 
         // Cache the certificate
         {
@@ -289,6 +284,17 @@ impl CertificateManager {
         })
     }
 
+    /// Validate that content looks like a certificate or key
+    fn validate_certificate_content(content: &str, source: &str) -> Result<()> {
+        if !content.contains("-----BEGIN CERTIFICATE-----")
+            && !content.contains("-----BEGIN RSA PRIVATE KEY-----")
+            && !content.contains("-----BEGIN PRIVATE KEY-----")
+        {
+            return Err(anyhow!("Invalid certificate format from URL: {}", source));
+        }
+        Ok(())
+    }
+
     /// Helper function to fetch certificate content from URL
     async fn fetch_certificate_content(client: &reqwest::Client, url: &str) -> Result<String> {
         let response = client
@@ -311,12 +317,7 @@ impl CertificateManager {
             .map_err(|e| anyhow!("Failed to read certificate content from {}: {}", url, e))?;
 
         // Validate that content looks like a certificate
-        if !content.contains("-----BEGIN CERTIFICATE-----")
-            && !content.contains("-----BEGIN RSA PRIVATE KEY-----")
-            && !content.contains("-----BEGIN PRIVATE KEY-----")
-        {
-            return Err(anyhow!("Invalid certificate format from URL: {}", url));
-        }
+        Self::validate_certificate_content(&content, url)?;
 
         Ok(content)
     }
@@ -343,6 +344,7 @@ mod tests {
 
     #[test]
     fn test_url_detection() {
+        use crate::config::Listener;
         assert!(Listener::is_url("https://example.com/cert.pem"));
         assert!(Listener::is_url("http://example.com/cert.pem"));
         assert!(!Listener::is_url("/path/to/cert.pem"));

@@ -58,19 +58,7 @@ async fn main() -> Result<()> {
             tracing::info!("Received Ctrl+C, shutting down.");
         }
         // On Unix, we can also listen for SIGTERM
-        result = async {
-            #[cfg(unix)]
-            {
-                let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-                sigterm.recv().await;
-                tracing::info!("Received SIGTERM, shutting down.");
-                Ok::<(), std::io::Error>(())
-            }
-            #[cfg(not(unix))]
-            {
-                futures::future::pending::<Result<(), std::io::Error>>().await
-            }
-        } => {
+        result = setup_sigterm_handler() => {
             if let Err(e) = result {
                 tracing::error!("Error setting up signal handler: {}", e);
             }
@@ -86,4 +74,17 @@ async fn main() -> Result<()> {
 
     tracing::info!("Shutdown complete.");
     Ok(())
+}
+
+#[cfg(unix)]
+async fn setup_sigterm_handler() -> Result<(), std::io::Error> {
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    sigterm.recv().await;
+    tracing::info!("Received SIGTERM, shutting down.");
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn setup_sigterm_handler() -> Result<(), std::io::Error> {
+    futures::future::pending::<Result<(), std::io::Error>>().await
 }

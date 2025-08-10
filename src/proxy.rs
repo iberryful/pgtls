@@ -125,24 +125,6 @@ mod tests {
     use crate::config::{Backend, Listener, Proxy};
     use std::time::Duration;
 
-    // Helper function to create a test proxy configuration
-    #[allow(dead_code)]
-    fn create_test_proxy_config(backend_port: u16) -> Proxy {
-        Proxy {
-            listener: Listener {
-                bind_address: "127.0.0.1:0".to_string(), // Let OS choose port
-                server_cert: "fixtures/test-cert.pem".to_string(),
-                server_key: "fixtures/test-key.pem".to_string(),
-                mtls: false,
-                client_ca: None,
-                cert_refresh_interval: Duration::from_secs(24 * 3600),
-            },
-            backend: Backend {
-                address: format!("127.0.0.1:{backend_port}"),
-            },
-        }
-    }
-
     #[tokio::test]
     async fn test_handle_connection_ssl_request() {
         // Create a mock backend server
