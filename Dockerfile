@@ -47,4 +47,4 @@ USER app
 EXPOSE 6432
 
 # Set the default command
-CMD ["/app/pgtls", "/app/config.toml"]
+CMD ["/app/pgtls", "-c", "/app/config.toml"]

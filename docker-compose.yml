@@ -41,7 +41,7 @@ services:
         condition: service_healthy
       cert-generator:
         condition: service_completed_successfully
-    command: ["/app/pgtls", "/app/config.toml"]
+    command: ["/app/pgtls", "-c", "/app/config.toml"]
 
   # Test runner service
   e2e-test:

@@ -43,7 +43,7 @@ async fn test_tls_to_plaintext_integration() -> Result<()> {
 
     // Start pgtls proxy
     let mut proxy_process = std::process::Command::new("./target/debug/pgtls")
-        .args([&config_path])
+        .args(["-c", &config_path])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
@@ -139,7 +139,7 @@ async fn test_mtls_integration() -> Result<()> {
 
     // Start pgtls proxy
     let mut proxy_process = std::process::Command::new("./target/debug/pgtls")
-        .args([&config_path])
+        .args(["-c", &config_path])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;

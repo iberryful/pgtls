@@ -48,7 +48,7 @@ For a detailed architectural overview and protocol specifications, please see th
     [[proxy]]
       [proxy.listener]
       bind_address = "0.0.0.0:6432"
-      cert_refresh_interval = 24h
+      cert_refresh_interval = "24h"
       server_cert = "/etc/pgtls/certs/proxy-server.pem" # or https://xxx.com/cert
       server_key = "/etc/pgtls/certs/proxy-server.key" # or https://xxx.com/cert
       mtls = true
@@ -70,6 +70,8 @@ For a detailed architectural overview and protocol specifications, please see th
 
 3.  **Run the proxy**:
     ```bash
+    pgtls -c pgtls.toml
+    # or
     pgtls --config pgtls.toml
     ```
 

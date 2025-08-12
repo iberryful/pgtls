@@ -14,6 +14,7 @@ use config::Config;
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Path to the configuration file
+    #[arg(short = 'c', long = "config")]
     config: String,
 }
 

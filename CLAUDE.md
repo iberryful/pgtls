@@ -116,6 +116,13 @@ log_level = "info"
   address = "db.example.com:5432"
 ```
 
+Usage:
+```bash
+pgtls -c config.toml
+# or
+pgtls --config config.toml
+```
+
 ## Testing Strategy
 
 Follow the TDD approach outlined in the tasks:
